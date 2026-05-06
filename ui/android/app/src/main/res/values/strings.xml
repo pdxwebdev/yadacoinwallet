@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Career Wallet</string>
+    <string name="title_activity_main">Career Wallet</string>
+    <string name="package_name">io.yadacoin.wallet</string>
+    <string name="custom_url_scheme">io.yadacoin.wallet</string>
+</resources>

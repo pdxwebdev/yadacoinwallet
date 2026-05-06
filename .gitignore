@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+ui/node_modules/
+ui/dist/
+
+# iOS
+ui/ios/App/Pods/
+ui/ios/App/build/
+ui/ios/App/DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Android
+ui/android/app/build/
+ui/android/build/
+*.apk
+*.aab
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
