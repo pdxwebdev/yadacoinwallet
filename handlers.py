@@ -200,7 +200,25 @@ class LocationHintsHandler(BaseHandler):
         self.write(record)
 
 
+class WalletPageHandler(BaseHandler):
+    def get_template_path(self):
+        return os.path.join(os.path.dirname(__file__), "templates")
+
+    async def get(self):
+        self.render("wallet.html")
+
+
+class UnwrapPageHandler(BaseHandler):
+    def get_template_path(self):
+        return os.path.join(os.path.dirname(__file__), "templates")
+
+    async def get(self):
+        self.render("unwrap.html")
+
+
 HANDLERS = [
+    (r"/wallet/?", WalletPageHandler),
+    (r"/unwrap/?", UnwrapPageHandler),
     (r"/wallet/api/location-hints", LocationHintsHandler),
     (
         r"/wallet/(.*)",
