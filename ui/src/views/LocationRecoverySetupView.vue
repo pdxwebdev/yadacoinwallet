@@ -3,8 +3,8 @@
     <h2>Set Up Location Recovery</h2>
     <p class="hint">
       Pick {{ LOCATION_COUNT }} meaningful places on the map and give each a
-      private hint. When you need to recover your wallet, you'll re-pin each
-      location to within ~11 meters. Your coordinates never leave your device.
+      private hint. Your wallet mnemonic will be encrypted with a key derived
+      from these locations — coordinates never leave your device.
     </p>
 
     <!-- Progress indicator -->
@@ -22,13 +22,33 @@
 
     <p v-if="locations.length < LOCATION_COUNT" class="step-label">
       Location {{ locations.length + 1 }} of {{ LOCATION_COUNT }}: tap the map
-      to place a pin
+      to zoom in, then select a grid cell
     </p>
 
     <!-- Map -->
-    <div ref="mapEl" class="map" />
+    <Map
+      ref="mapEl"
+      :center="mapCenter"
+      :zoom="initialZoom"
+      :precision="4"
+      :map-container-style="{
+        width: '100%',
+        height: '300px',
+        borderRadius: '10px',
+        overflow: 'hidden',
+        border: '1px solid #ccc',
+      }"
+      v-model:selected-location="selectedLocation"
+      v-model:selected-square-id="selectedSquareId"
+      v-model:hover-index="hoverIndex"
+      @grid-square-clicked="onGridSquareClicked"
+    />
+    <p class="map-hint">
+      Tap the map to zoom in. When the grid appears, click a cell to select your
+      location.
+    </p>
 
-    <!-- Hint input (shown after pin placed, before confirming) -->
+    <!-- Hint input (shown after grid square selected, before confirming) -->
     <div v-if="pendingPin" class="hint-row">
       <input
         v-model="pendingHint"
@@ -77,8 +97,9 @@
         automatically.
       </p>
       <p class="code-note">
-        The code only unlocks your hint labels. Your wallet is secured by the
-        locations themselves — they never leave this device.
+        The code only unlocks your hint labels. Your wallet mnemonic is
+        encrypted with a zero-knowledge key derived from your 3 locations — it
+        never leaves this device in plaintext.
       </p>
       <button class="btn-primary" @click="emitDone">
         I've written it down →
@@ -88,13 +109,22 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref } from "vue";
+import Map from "../components/Map.vue";
 import {
   setupLocationRecovery,
   LOCATION_COUNT,
 } from "../composables/useLocationRecovery.js";
 
-// No mnemonic prop needed — the mnemonic is derived from the locations
+// If provided, this existing mnemonic is what gets encrypted by the ZKP key.
+// If omitted (creating a new wallet from locations), a fresh one is generated.
+// prevKeyHash: hex hash of the latest key log entry — bound into the Schnorr
+// challenge so the proof is tied to a specific key rotation (pass null until
+// blockchain integration is complete).
+const props = defineProps({
+  existingMnemonic: { type: String, default: null },
+  prevKeyHash: { type: String, default: null },
+});
 const emit = defineEmits(["setup-complete", "skip"]);
 
 const mapEl = ref(null);
@@ -105,110 +135,58 @@ const errorMsg = ref("");
 const saving = ref(false);
 const recoveryCode = ref("");
 const derivedMnemonic = ref("");
+const txnData = ref(null);
 
-let leafletMap = null;
-let markers = [];
-let tempMarker = null;
+// Map state
+const initialZoom = 2;
+const mapCenter = ref({ lat: 0, lng: 0 });
+const selectedLocation = ref({ lat: 0, lng: 0, confirmed: false });
+const selectedSquareId = ref("");
+const hoverIndex = ref(-1);
 
-onMounted(async () => {
-  const L = await import("leaflet");
-  await import("leaflet/dist/leaflet.css");
-
-  // Fix default marker icon path broken by bundlers
-  delete L.Icon.Default.prototype._getIconUrl;
-  L.Icon.Default.mergeOptions({
-    iconRetinaUrl: new URL(
-      "leaflet/dist/images/marker-icon-2x.png",
-      import.meta.url,
-    ).href,
-    iconUrl: new URL("leaflet/dist/images/marker-icon.png", import.meta.url)
-      .href,
-    shadowUrl: new URL("leaflet/dist/images/marker-shadow.png", import.meta.url)
-      .href,
-  });
-
-  leafletMap = L.map(mapEl.value).setView([37.3861, -122.0839], 11); // default: Silicon Valley
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: "© OpenStreetMap contributors",
-  }).addTo(leafletMap);
-
-  // Try to center on user's location
-  navigator.geolocation?.getCurrentPosition((pos) => {
-    leafletMap.setView([pos.coords.latitude, pos.coords.longitude], 13);
-  });
-
-  leafletMap.on("click", (e) => {
-    if (locations.value.length >= LOCATION_COUNT) return;
-    if (pendingPin.value) return; // wait for hint confirmation
-    const { lat, lng } = e.latlng;
-    pendingPin.value = { lat, lng };
-    pendingHint.value = "";
-    // Show temporary marker
-    if (tempMarker) tempMarker.remove();
-    tempMarker = L.marker([lat, lng], { opacity: 0.6 }).addTo(leafletMap);
-  });
-});
-
-onUnmounted(() => {
-  leafletMap?.remove();
-});
-
-async function confirmPin() {
-  if (!pendingPin.value) return;
-  const L = await import("leaflet");
-  const loc = { ...pendingPin.value, hint: pendingHint.value.trim() };
-  locations.value.push(loc);
-
-  // Replace temp with permanent numbered marker
-  if (tempMarker) {
-    tempMarker.remove();
-    tempMarker = null;
-  }
-  const num = locations.value.length;
-  const icon = L.divIcon({
-    html: `<div class="loc-pin">${num}</div>`,
-    className: "",
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
-  });
-  const m = L.marker([loc.lat, loc.lng], { icon }).addTo(leafletMap);
-  markers.push(m);
-
-  pendingPin.value = null;
+function onGridSquareClicked({ lat, lng }) {
+  if (locations.value.length >= LOCATION_COUNT) return;
+  if (pendingPin.value) return;
+  pendingPin.value = { lat, lng };
   pendingHint.value = "";
 }
 
-function cancelPin() {
-  tempMarker?.remove();
-  tempMarker = null;
+function confirmPin() {
+  if (!pendingPin.value) return;
+  const loc = { ...pendingPin.value, hint: pendingHint.value.trim() };
+  locations.value.push(loc);
   pendingPin.value = null;
   pendingHint.value = "";
+  selectedSquareId.value = "";
+  selectedLocation.value = { lat: 0, lng: 0, confirmed: false };
+  // Reset map back to world view for next selection
+  mapEl.value?.reset(initialZoom, { lat: 0, lng: 0 });
+}
+
+function cancelPin() {
+  pendingPin.value = null;
+  pendingHint.value = "";
+  selectedSquareId.value = "";
+  selectedLocation.value = { lat: 0, lng: 0, confirmed: false };
+  mapEl.value?.reset(initialZoom, { lat: 0, lng: 0 });
 }
 
 function removeLocation(idx) {
   locations.value.splice(idx, 1);
-  const m = markers.splice(idx, 1)[0];
-  m?.remove();
-  // Re-number remaining markers
-  markers.forEach((marker, i) => {
-    marker.setIcon(
-      window.L?.divIcon({
-        html: `<div class="loc-pin">${i + 1}</div>`,
-        className: "",
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
-      }),
-    );
-  });
 }
 
 async function save() {
   errorMsg.value = "";
   saving.value = true;
   try {
-    const result = await setupLocationRecovery(locations.value);
+    const result = await setupLocationRecovery(
+      locations.value,
+      props.existingMnemonic ?? null,
+      props.prevKeyHash ?? null,
+    );
     derivedMnemonic.value = result.mnemonic;
     recoveryCode.value = result.code;
+    txnData.value = result.txnData;
   } catch (e) {
     errorMsg.value = e.message;
   } finally {
@@ -220,6 +198,7 @@ function emitDone() {
   emit("setup-complete", {
     mnemonic: derivedMnemonic.value,
     code: recoveryCode.value,
+    txnData: txnData.value,
   });
 }
 </script>
@@ -263,12 +242,11 @@ h2 {
   font-size: 0.9rem;
   font-weight: 500;
 }
-.map {
-  width: 100%;
-  height: 300px;
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid #ccc;
+.map-hint {
+  font-size: 0.8rem;
+  color: #777;
+  text-align: center;
+  margin-top: -0.25rem;
 }
 .hint-row {
   display: flex;

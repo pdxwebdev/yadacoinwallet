@@ -9,7 +9,7 @@
 
 import { ref, readonly } from "vue";
 
-const DB_NAME = "yadacoin_wallet";
+const DB_NAME = "yadacoin_creds";
 const DB_VERSION = 1;
 const CRED_STORE = "credentials";
 const NATIVE_CREDS_KEY = "yadacoin_credentials";

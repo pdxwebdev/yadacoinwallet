@@ -1,0 +1,40 @@
+{
+  "client_id": "did:web:employer.example.com",
+  "client_metadata": {
+    "client_name": "Acme Corp Hiring Portal"
+  },
+  "response_type": "vp_token",
+  "response_mode": "direct_post",
+  "response_uri": "http://localhost:8005/wallet/test/vp-echo",
+  "nonce": "test-nonce-abc123",
+  "presentation_definition": {
+    "id": "python-badge-request",
+    "input_descriptors": [
+      {
+        "id": "python-credential",
+        "name": "Python Programming Badge",
+        "purpose": "Verify Python programming skills for employment consideration",
+        "constraints": {
+          "fields": [
+            {
+              "path": ["$.type"],
+              "filter": {
+                "type": "array",
+                "contains": { "const": "OpenBadgeCredential" }
+              }
+            },
+            {
+              "path": ["$.credentialSubject.achievement.name"],
+              "id": "achievement_name"
+            },
+            {
+              "path": ["$.credentialSubject.achievement.criteria.narrative"],
+              "id": "criteria",
+              "optional": true
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

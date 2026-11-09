@@ -298,6 +298,10 @@ async function unlock(pin) {
   currentKeyIndex.value = vaultData.keyIndex;
   holderDid.value = vaultData.did;
   isUnlocked.value = true;
+  // On native, persist PIN for biometric unlock convenience
+  if (isNative()) {
+    storeBiometricPin(pin).catch(() => {});
+  }
 }
 
 /** Lock the wallet — clears in-memory key material */
@@ -315,8 +319,9 @@ async function sign(messageBytes) {
   if (!_hdRoot) throw new Error("Wallet locked");
   const child = deriveChildKey(_hdRoot, currentKeyIndex.value);
   const privKey = child.privateKey;
+  // v3.x signAsync returns a compact Uint8Array (r||s, 64 bytes) directly
   const sig = await secp.signAsync(sha256(messageBytes), privKey);
-  return hexEncode(sig.toDERRawBytes());
+  return hexEncode(sig instanceof Uint8Array ? sig : sig.toCompactRawBytes());
 }
 
 /**
@@ -385,6 +390,28 @@ async function getMnemonic(pin) {
   return vaultData.mnemonic;
 }
 
+const BIOMETRIC_PIN_KEY = "yadacoin_biometric_pin";
+
+/**
+ * Store PIN in native secure storage for biometric unlock.
+ * Called after a successful PIN unlock on native so subsequent unlocks
+ * can retrieve it after biometric authentication.
+ */
+async function storeBiometricPin(pin) {
+  if (!isNative()) return;
+  await nativePut(BIOMETRIC_PIN_KEY, { pin });
+}
+
+/**
+ * Retrieve the PIN previously stored for biometric unlock.
+ * Returns null if not stored.
+ */
+async function getBiometricPin() {
+  if (!isNative()) return null;
+  const data = await nativeGet(BIOMETRIC_PIN_KEY);
+  return data?.pin ?? null;
+}
+
 export function useKeyVault() {
   return {
     isUnlocked: readonly(isUnlocked),
@@ -401,5 +428,7 @@ export function useKeyVault() {
     deleteWallet,
     getMnemonic,
     getStoredDid,
+    storeBiometricPin,
+    getBiometricPin,
   };
 }

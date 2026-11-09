@@ -14,9 +14,10 @@ export default defineConfig({
       VitePWA({
         registerType: "autoUpdate",
         manifest: {
-          name: "YadaCoin Career Wallet",
-          short_name: "Career Wallet",
-          description: "Learner-controlled verifiable credential wallet",
+          name: "CA Career Passport",
+          short_name: "Career Passport",
+          description:
+            "California's learner-controlled verifiable credential wallet",
           theme_color: "#1a1a2e",
           background_color: "#ffffff",
           display: "standalone",

@@ -56,7 +56,29 @@
         />
       </div>
 
-      <div ref="mapEl" class="map" />
+      <div class="map-wrap">
+        <Map
+          ref="mapComponent"
+          :center="mapCenter"
+          :zoom="initialZoom"
+          :precision="4"
+          :map-container-style="{
+            width: '100%',
+            height: '300px',
+            borderRadius: '10px',
+            overflow: 'hidden',
+            border: '1px solid #ccc',
+          }"
+          v-model:selected-location="selectedLocation"
+          v-model:selected-square-id="selectedSquareId"
+          v-model:hover-index="hoverIndex"
+          @grid-square-clicked="onGridSquareClicked"
+        />
+        <p class="map-hint">
+          Tap the map to zoom in. When the grid appears, click a cell to select
+          your location.
+        </p>
+      </div>
 
       <div v-if="pendingPin" class="pending-row">
         <span class="pending-label">Confirm this location?</span>
@@ -71,8 +93,9 @@
     <!-- New PIN -->
     <div v-else-if="step === 'pin'">
       <p class="hint">
-        Great — all {{ LOCATION_COUNT }} locations placed! Choose a new PIN to
-        protect your restored wallet on this device.
+        Great — all {{ LOCATION_COUNT }} locations placed! A zero-knowledge
+        proof will verify them against the stored commitment. Choose a new PIN
+        to protect your restored wallet on this device.
       </p>
       <input
         v-model="newPin"
@@ -99,7 +122,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref } from "vue";
+import Map from "../components/Map.vue";
 import { useKeyVault } from "../composables/useKeyVault.js";
 import {
   getLocationHints,
@@ -120,11 +144,14 @@ const newPin = ref("");
 const newPinConfirm = ref("");
 const errorMsg = ref("");
 const restoring = ref(false);
-const mapEl = ref(null);
 
-let leafletMap = null;
-let markers = [];
-let tempMarker = null;
+// Map state
+const mapComponent = ref(null);
+const initialZoom = 2;
+const mapCenter = ref({ lat: 0, lng: 0 });
+const selectedLocation = ref({ lat: 0, lng: 0, confirmed: false });
+const selectedSquareId = ref("");
+const hoverIndex = ref(-1);
 
 async function fetchHints() {
   errorMsg.value = "";
@@ -148,79 +175,37 @@ async function fetchHints() {
     fetchingHints.value = false;
   }
   step.value = "map";
-  await initMap();
 }
 
-async function skipCode() {
+function skipCode() {
   hints.value = [];
   step.value = "map";
-  await initMap();
 }
 
-onMounted(() => {
-  // Start on the code entry step — no automatic load
-});
-
-async function initMap() {
-  await new Promise((r) => setTimeout(r, 50));
-  const L = await import("leaflet");
-  await import("leaflet/dist/leaflet.css");
-  delete L.Icon.Default.prototype._getIconUrl;
-  L.Icon.Default.mergeOptions({
-    iconRetinaUrl: new URL(
-      "leaflet/dist/images/marker-icon-2x.png",
-      import.meta.url,
-    ).href,
-    iconUrl: new URL("leaflet/dist/images/marker-icon.png", import.meta.url)
-      .href,
-    shadowUrl: new URL("leaflet/dist/images/marker-shadow.png", import.meta.url)
-      .href,
-  });
-  leafletMap = L.map(mapEl.value).setView([37.3861, -122.0839], 11);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: "© OpenStreetMap contributors",
-  }).addTo(leafletMap);
-  navigator.geolocation?.getCurrentPosition((pos) => {
-    leafletMap.setView([pos.coords.latitude, pos.coords.longitude], 13);
-  });
-  leafletMap.on("click", (e) => {
-    if (locations.value.length >= LOCATION_COUNT) return;
-    if (pendingPin.value) tempMarker?.remove();
-    const { lat, lng } = e.latlng;
-    pendingPin.value = { lat, lng };
-    tempMarker = L.marker([lat, lng], { opacity: 0.6 }).addTo(leafletMap);
-  });
+function onGridSquareClicked({ lat, lng }) {
+  if (locations.value.length >= LOCATION_COUNT) return;
+  if (pendingPin.value) return;
+  pendingPin.value = { lat, lng };
 }
 
-async function confirmPin() {
+function confirmPin() {
   if (!pendingPin.value) return;
-  const L = await import("leaflet");
   locations.value.push({ ...pendingPin.value });
-  tempMarker?.remove();
-  tempMarker = null;
-  const icon = L.divIcon({
-    html: `<div class="loc-pin">${locations.value.length}</div>`,
-    className: "",
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
-  });
-  markers.push(
-    L.marker([locations.value.at(-1).lat, locations.value.at(-1).lng], {
-      icon,
-    }).addTo(leafletMap),
-  );
   pendingPin.value = null;
+  selectedSquareId.value = "";
+  selectedLocation.value = { lat: 0, lng: 0, confirmed: false };
   if (locations.value.length === LOCATION_COUNT) {
-    leafletMap.remove();
-    leafletMap = null;
     step.value = "pin";
+  } else {
+    mapComponent.value?.reset(initialZoom, { lat: 0, lng: 0 });
   }
 }
 
 function cancelPin() {
-  tempMarker?.remove();
-  tempMarker = null;
   pendingPin.value = null;
+  selectedSquareId.value = "";
+  selectedLocation.value = { lat: 0, lng: 0, confirmed: false };
+  mapComponent.value?.reset(initialZoom, { lat: 0, lng: 0 });
 }
 
 async function restore() {
@@ -241,18 +226,12 @@ async function restore() {
   } catch (e) {
     errorMsg.value = e.message;
     locations.value = [];
-    markers.forEach((m) => m.remove());
-    markers = [];
     step.value = "map";
-    await initMap();
+    mapComponent.value?.reset(initialZoom, { lat: 0, lng: 0 });
   } finally {
     restoring.value = false;
   }
 }
-
-onUnmounted(() => {
-  leafletMap?.remove();
-});
 </script>
 
 <style scoped>
@@ -311,12 +290,15 @@ h2 {
   font-size: 0.9rem;
   font-weight: 500;
 }
-.map {
-  width: 100%;
-  height: 300px;
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid #ccc;
+.map-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.map-hint {
+  font-size: 0.8rem;
+  color: #777;
+  text-align: center;
 }
 .pending-row {
   display: flex;

@@ -3,7 +3,7 @@ name: iOS App Store Release
 on:
   push:
     branches:
-      - master
+      - main
     tags:
       - "v*"
   pull_request:
@@ -39,7 +39,7 @@ jobs:
         run: npm ci
 
       - name: Build Vue app
-        run: npm run build
+        run: npm run build:native
 
       - name: Sync Capacitor
         run: npx cap sync ios
@@ -84,7 +84,7 @@ jobs:
         run: npm ci
 
       - name: Build Vue app
-        run: npm run build
+        run: npm run build:native
 
       - name: Sync Capacitor
         run: npx cap sync ios

@@ -1,6 +1,6 @@
 <template>
   <div class="setup-view">
-    <h1>Welcome to Career Wallet</h1>
+    <h1>Welcome to CA Career Passport</h1>
     <p class="intro">
       Your credential wallet generates a private key on this device. Your key
       never leaves your device.
@@ -55,8 +55,8 @@
 
       <div class="section-title">Create wallet from locations</div>
       <p class="intro" style="margin-bottom: 0.5rem">
-        Your 8 map locations become your wallet seed — no phrase to write down.
-        Re-pin the same locations on any device to recover.
+        Your 3 map locations generate a zero-knowledge proof — no phrase to
+        write down. Re-pin the same 3 locations on any device to recover.
       </p>
       <button class="btn-secondary" @click="showLocationCreate = true">
         Create from Locations

@@ -12,6 +12,11 @@
 import { ref } from "vue";
 import { useKeyVault } from "./useKeyVault.js";
 import { sha256 } from "@noble/hashes/sha256";
+import {
+  isSdJwt,
+  buildSdJwtPresentation,
+  buildFilteredVc,
+} from "./useSelectiveDisclosure.js";
 
 const vpStatus = ref("idle"); // idle | requesting | presenting | done | error
 const presentationRequest = ref(null);
@@ -31,6 +36,9 @@ export function useOID4VP() {
       let req;
       if (typeof uriOrObject === "object") {
         req = uriOrObject;
+      } else if (uriOrObject.trimStart().startsWith("{")) {
+        // Raw JSON request object pasted directly
+        req = JSON.parse(uriOrObject);
       } else {
         const url = new URL(uriOrObject);
         const requestUri = url.searchParams.get("request_uri");
@@ -60,38 +68,108 @@ export function useOID4VP() {
   }
 
   /**
-   * Present selected credentials to the verifier.
-   * selectedVCs: array of W3C VC objects the user has chosen to present.
-   * Returns the verifier's response (often a redirect URI or status).
+   * Present credentials to the verifier with selective disclosure.
+   *
+   * credentialSpecs — array of:
+   *   { vc, selectedClaims: Set<string>, rawSdJwt?: string }
+   *
+   *   vc             — the stored W3C VC object
+   *   selectedClaims — claim names the holder has chosen to reveal
+   *   rawSdJwt       — original SD-JWT string (if credential is SD-JWT format)
+   *
+   * For SD-JWT credentials: builds an SD-JWT VP with KB-JWT.
+   * For plain W3C VCs: builds a VP JWT containing filtered credentialSubjects.
+   *
+   * Returns the verifier's response.
    */
-  async function present(selectedVCs) {
+  async function present(credentialSpecs) {
     if (!presentationRequest.value)
       throw new Error("No active presentation request");
     vpStatus.value = "presenting";
     try {
       const req = presentationRequest.value;
-      const { did, publicKeyHex } = vault.getHolderInfo();
+      const { did } = vault.getHolderInfo();
       const nonce = req.nonce || _randomHex(16);
       const now = Math.floor(Date.now() / 1000);
+      const audience = req.client_id || req.response_uri;
 
-      // Build the VP
-      const vp = {
-        "@context": ["https://www.w3.org/ns/credentials/v2"],
-        type: ["VerifiablePresentation"],
-        holder: did,
-        verifiableCredential: selectedVCs,
+      // Separate SD-JWT and plain VC specs
+      const sdJwtSpecs = credentialSpecs.filter((s) => s.rawSdJwt);
+      const plainSpecs = credentialSpecs.filter((s) => !s.rawSdJwt);
+
+      // Build vp_token(s)
+      // OID4VP allows multiple vp_tokens as a JSON array when mixing formats.
+      const vpTokens = [];
+      const descriptorMap = [];
+      let tokenIndex = 0;
+
+      // --- SD-JWT credentials → dc+sd-jwt format ---
+      for (const spec of sdJwtSpecs) {
+        const sdVp = await buildSdJwtPresentation(
+          spec.rawSdJwt,
+          spec.selectedClaims,
+          nonce,
+          audience,
+        );
+        vpTokens.push(sdVp);
+        const descId = _matchDescriptorId(
+          req.presentation_definition,
+          spec.vc,
+          tokenIndex,
+        );
+        descriptorMap.push({
+          id: descId,
+          format: "dc+sd-jwt",
+          path: vpTokens.length > 1 ? `$[${tokenIndex}]` : "$",
+        });
+        tokenIndex++;
+      }
+
+      // --- Plain W3C VC credentials → jwt_vc_json in a VP JWT ---
+      if (plainSpecs.length > 0) {
+        const filteredVCs = plainSpecs.map((spec) =>
+          buildFilteredVc(spec.vc, spec.selectedClaims),
+        );
+
+        const vp = {
+          "@context": ["https://www.w3.org/ns/credentials/v2"],
+          type: ["VerifiablePresentation"],
+          holder: did,
+          verifiableCredential: filteredVCs,
+        };
+
+        const vpJwt = await _buildVpJwt(vp, req, did, nonce, now);
+        vpTokens.push(vpJwt);
+
+        filteredVCs.forEach((_, i) => {
+          const spec = plainSpecs[i];
+          const descId = _matchDescriptorId(
+            req.presentation_definition,
+            spec.vc,
+            tokenIndex,
+          );
+          descriptorMap.push({
+            id: descId,
+            format: "jwt_vc_json",
+            path: vpTokens.length > 1 ? `$[${tokenIndex}]` : "$",
+            path_nested: {
+              format: "jwt_vc_json",
+              path: `$.vp.verifiableCredential[${i}]`,
+            },
+          });
+        });
+        tokenIndex++;
+      }
+
+      const vpToken =
+        vpTokens.length === 1 ? vpTokens[0] : JSON.stringify(vpTokens);
+
+      const submission = {
+        id: _randomHex(8),
+        definition_id: req.presentation_definition?.id || "default",
+        descriptor_map: descriptorMap,
       };
 
-      // Sign the VP as a JWT (vp_token)
-      const vpToken = await _buildVpJwt(vp, req, did, publicKeyHex, nonce, now);
-
-      // Build presentation_submission mapping credentials to descriptor IDs
-      const submission = _buildSubmission(
-        req.presentation_definition,
-        selectedVCs,
-      );
-
-      // POST to response_uri (direct_post)
       const responseUri = req.response_uri || req.redirect_uri;
       if (!responseUri)
         throw new Error("No response_uri in presentation request");
@@ -135,6 +213,48 @@ export function useOID4VP() {
   };
 }
 
+/**
+ * Build a vp_token string from credential specs without an active request.
+ * Used for in-person QR display where no response_uri is involved.
+ */
+export async function buildVpTokenFromSpecs(credentialSpecs, opts = {}) {
+  const vault = useKeyVault();
+  const { did } = vault.getHolderInfo();
+  const nonce = opts.nonce || _randomHex(16);
+  const now = Math.floor(Date.now() / 1000);
+  const fakeReq = { client_id: did, nonce, presentation_definition: null };
+
+  const plainSpecs = credentialSpecs.filter((s) => !s.rawSdJwt);
+  const sdJwtSpecs = credentialSpecs.filter((s) => s.rawSdJwt);
+  const vpTokens = [];
+
+  for (const spec of sdJwtSpecs) {
+    vpTokens.push(
+      await buildSdJwtPresentation(
+        spec.rawSdJwt,
+        spec.selectedClaims,
+        nonce,
+        did,
+      ),
+    );
+  }
+
+  if (plainSpecs.length > 0) {
+    const filteredVCs = plainSpecs.map((s) =>
+      buildFilteredVc(s.vc, s.selectedClaims),
+    );
+    const vp = {
+      "@context": ["https://www.w3.org/ns/credentials/v2"],
+      type: ["VerifiablePresentation"],
+      holder: did,
+      verifiableCredential: filteredVCs,
+    };
+    vpTokens.push(await _buildVpJwt(vp, fakeReq, did, nonce, now));
+  }
+
+  return vpTokens.length === 1 ? vpTokens[0] : JSON.stringify(vpTokens);
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function _b64url(data) {
@@ -148,7 +268,7 @@ function _b64url(data) {
     .replace(/=/g, "");
 }
 
-async function _buildVpJwt(vp, req, did, pubKeyHex, nonce, now) {
+async function _buildVpJwt(vp, req, did, nonce, now) {
   const vault = useKeyVault();
 
   const header = {
@@ -162,7 +282,7 @@ async function _buildVpJwt(vp, req, did, pubKeyHex, nonce, now) {
     sub: did,
     aud: req.client_id || req.response_uri,
     iat: now,
-    exp: now + 300, // 5 minutes
+    exp: now + 300,
     nonce,
     vp,
   };
@@ -175,23 +295,32 @@ async function _buildVpJwt(vp, req, did, pubKeyHex, nonce, now) {
   return `${headerB64}.${payloadB64}.${compactSig}`;
 }
 
-function _buildSubmission(presentationDefinition, selectedVCs) {
-  const descriptors = (presentationDefinition?.input_descriptors || []).map(
-    (desc, i) => ({
-      id: desc.id,
-      format: "ldp_vc",
-      path: "$",
-      path_nested: {
-        format: "ldp_vc",
-        path: `$.verifiableCredential[${i}]`,
-      },
-    }),
-  );
-  return {
-    id: _randomHex(8),
-    definition_id: presentationDefinition?.id || "default",
-    descriptor_map: descriptors,
-  };
+/**
+ * Match a credential to a descriptor ID in the presentation_definition.
+ * Falls back to the descriptor at the given index if no type match is found.
+ */
+function _matchDescriptorId(presentationDefinition, vc, fallbackIndex) {
+  const descriptors = presentationDefinition?.input_descriptors || [];
+  const vcTypes = Array.isArray(vc.type) ? vc.type : [vc.type];
+
+  for (const desc of descriptors) {
+    // Check if any type constraint in the descriptor matches this VC
+    const typeConstraints =
+      desc.constraints?.fields
+        ?.filter(
+          (f) => f.path?.includes("$.type") || f.path?.includes("$.vc.type"),
+        )
+        .flatMap((f) => f.filter?.const || []) || [];
+
+    if (
+      typeConstraints.length === 0 ||
+      typeConstraints.some((t) => vcTypes.includes(t))
+    ) {
+      return desc.id;
+    }
+  }
+
+  return descriptors[fallbackIndex]?.id || `descriptor-${fallbackIndex}`;
 }
 
 function _parseRequestObject(body) {
@@ -213,25 +342,10 @@ function _randomHex(bytes) {
     .join("");
 }
 
-function _derToCompact(derHex) {
-  const hex = derHex;
-  const der = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < der.length; i++)
-    der[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  let i = 2;
-  i++;
-  const rLen = der[i++];
-  const r = der.slice(i, i + rLen);
-  i += rLen;
-  i++;
-  const sLen = der[i++];
-  const s = der.slice(i, i + sLen);
-  const rPad = new Uint8Array(32);
-  const sPad = new Uint8Array(32);
-  rPad.set(r.slice(-32), 32 - Math.min(r.length, 32));
-  sPad.set(s.slice(-32), 32 - Math.min(s.length, 32));
-  const compact = new Uint8Array(64);
-  compact.set(rPad, 0);
-  compact.set(sPad, 32);
-  return _b64url(String.fromCharCode(...compact));
+function _derToCompact(compactHex) {
+  // sign() now returns compact (r||s) hex directly — just base64url-encode it
+  const bytes = new Uint8Array(compactHex.length / 2);
+  for (let i = 0; i < bytes.length; i++)
+    bytes[i] = parseInt(compactHex.slice(i * 2, i * 2 + 2), 16);
+  return _b64url(String.fromCharCode(...bytes));
 }

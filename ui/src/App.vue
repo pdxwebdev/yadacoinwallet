@@ -20,7 +20,7 @@
     <!-- Main wallet -->
     <template v-else>
       <header class="wallet-header">
-        <span class="wallet-title">Career Wallet</span>
+        <span class="wallet-title">CA Career Passport</span>
         <span class="did-badge" :title="holderDid">{{ shortDid }}</span>
         <button class="lock-btn" @click="lock">Lock</button>
       </header>

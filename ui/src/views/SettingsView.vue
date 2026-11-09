@@ -4,11 +4,42 @@
 
     <!-- Location recovery setup (shown inline) -->
     <template v-if="showLocationSetup">
+      <!-- Step 1: verify PIN to retrieve mnemonic -->
+      <div v-if="!unlockedMnemonic" class="pin-prompt">
+        <h3>Verify your PIN</h3>
+        <p class="desc">
+          Enter your wallet PIN so the mnemonic can be encrypted with your
+          location key.
+        </p>
+        <input
+          v-model="verifyPin"
+          type="password"
+          inputmode="numeric"
+          placeholder="Wallet PIN"
+          class="input"
+          autocomplete="current-password"
+          @keyup.enter="fetchMnemonic"
+        />
+        <p v-if="pinError" class="error">{{ pinError }}</p>
+        <button
+          class="btn-primary"
+          :disabled="fetchingMnemonic"
+          @click="fetchMnemonic"
+        >
+          {{ fetchingMnemonic ? "Verifying…" : "Continue" }}
+        </button>
+        <button class="btn-back" @click="cancelLocationSetup">Cancel</button>
+      </div>
+
+      <!-- Step 2: pick locations -->
       <LocationRecoverySetupView
-        v-if="!locationCode"
+        v-else-if="!locationCode"
+        :existing-mnemonic="unlockedMnemonic"
         @setup-complete="onLocationSetupComplete"
-        @skip="showLocationSetup = false"
+        @skip="cancelLocationSetup"
       />
+
+      <!-- Step 3: show recovery code -->
       <div v-else class="code-success">
         <p class="code-success-title">Location Recovery Updated</p>
         <p class="code-label">Your Recovery Code</p>
@@ -17,15 +48,7 @@
           Write this code down. To recover your wallet on any device, enter this
           code and re-pin your {{ LOCATION_COUNT }} locations.
         </p>
-        <button
-          class="btn-primary"
-          @click="
-            showLocationSetup = false;
-            locationCode = '';
-          "
-        >
-          Done
-        </button>
+        <button class="btn-primary" @click="cancelLocationSetup">Done</button>
       </div>
     </template>
 
@@ -34,8 +57,8 @@
         <h3>Location Recovery</h3>
         <p class="desc">
           Pick {{ LOCATION_COUNT }} meaningful places on a map. Re-pin those
-          places on any device to restore your wallet. Your coordinates never
-          leave this device.
+          places on any device to decrypt and restore your wallet. Your
+          coordinates never leave this device.
         </p>
         <button class="btn-primary" @click="showLocationSetup = true">
           Set Up Location Recovery
@@ -67,6 +90,35 @@ const vault = useKeyVault();
 
 const showLocationSetup = ref(false);
 const locationCode = ref("");
+// PIN verification state (needed to retrieve mnemonic for location encryption)
+const verifyPin = ref("");
+const pinError = ref("");
+const fetchingMnemonic = ref(false);
+const unlockedMnemonic = ref(null);
+
+async function fetchMnemonic() {
+  pinError.value = "";
+  if (!verifyPin.value) {
+    pinError.value = "Enter your PIN.";
+    return;
+  }
+  fetchingMnemonic.value = true;
+  try {
+    unlockedMnemonic.value = await vault.getMnemonic(verifyPin.value);
+  } catch {
+    pinError.value = "Incorrect PIN.";
+  } finally {
+    fetchingMnemonic.value = false;
+  }
+}
+
+function cancelLocationSetup() {
+  showLocationSetup.value = false;
+  locationCode.value = "";
+  verifyPin.value = "";
+  pinError.value = "";
+  unlockedMnemonic.value = null;
+}
 
 const info = vault.getHolderInfo();
 const did = info?.did ?? vault.holderDid?.value ?? "";
@@ -83,9 +135,10 @@ function copyDid() {
 }
 
 function onLocationSetupComplete({ code }) {
-  // We don't import the mnemonic here — the vault already exists.
-  // Just show the new recovery code to the user.
   locationCode.value = code;
+  // Clear the in-memory mnemonic now that setup is done
+  unlockedMnemonic.value = null;
+  verifyPin.value = "";
 }
 </script>
 
@@ -172,6 +225,22 @@ h3 {
 }
 .muted {
   color: #999;
+}
+.pin-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.25rem 0;
+}
+.btn-back {
+  background: none;
+  border: none;
+  color: #666;
+  text-decoration: underline;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
 }
 .code-success {
   background: #fff8e1;
