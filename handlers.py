@@ -7,6 +7,7 @@ from tornado.web import StaticFileHandler
 from yadacoin.http.base import BaseHandler
 
 DIST_DIR = os.path.join(os.path.dirname(__file__), "dist")
+WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 
 # ── In-memory stores ──────────────────────────────────────────────────────────
 
@@ -388,6 +389,6 @@ HANDLERS = _WALLET_API_HANDLERS + [
     (
         r"/wallet/(.*)",
         StaticFileHandler,
-        {"path": DIST_DIR, "default_filename": "index.html"},
+        {"path": WEB_DIR, "default_filename": "index.html"},
     ),
 ]
