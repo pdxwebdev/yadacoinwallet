@@ -604,7 +604,44 @@ class FeeEstimateHandler(BaseHandler):
         )
 
 
+class UnwrapFulfillmentHandler(BaseHandler):
+    async def get(self):
+        address = self.get_query_argument("address", "").strip()
+        if not address:
+            self.set_status(400)
+            return self.write({"error": "address required"})
+        relationships = set()
+        cursor = self.config.mongo.async_db.blocks.aggregate(
+            [
+                {"$match": {"transactions.outputs.to": address}},
+                {"$unwind": "$transactions"},
+                {
+                    "$match": {
+                        "transactions.outputs": {
+                            "$elemMatch": {"to": address, "value": {"$gt": 0}}
+                        },
+                        "transactions.relationship": {"$type": "string", "$ne": ""},
+                    }
+                },
+                {"$project": {"relationship": "$transactions.relationship", "_id": 0}},
+            ]
+        )
+        async for doc in cursor:
+            relationships.add(doc.get("relationship"))
+        pending = self.config.mongo.async_db.miner_transactions.find(
+            {
+                "outputs": {"$elemMatch": {"to": address, "value": {"$gt": 0}}},
+                "relationship": {"$type": "string", "$ne": ""},
+            },
+            {"_id": 0, "relationship": 1},
+        )
+        async for doc in pending:
+            relationships.add(doc.get("relationship"))
+        self.write({"relationships": [rel for rel in relationships if rel]})
+
+
 WALLET_HANDLERS = [
+    (r"/unwrap-fulfillment", UnwrapFulfillmentHandler),
     (r"/wallet?([\/a-z]+)", WalletHandler),
     (r"/unwrap?([\/a-z]+)", UnwrapHandler),
     (r"/get-addresses", GetAddressesHandler),
